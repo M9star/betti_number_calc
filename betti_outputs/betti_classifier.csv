@@ -1,0 +1,11 @@
+label,devanagari,official_b1,dominant_b1,confidence_%,mean_b0,mean_b1,verdict
+0,०,-1,1,56.1,2.524,0.721,AMBIGUOUS — best guess β₁=1 but only 56.1% confident
+1,१,1,1,84.7,1.046,0.912,β₁ = 1  (84.7% of images agree)
+2,२,-1,0,51.8,1.06,0.643,AMBIGUOUS — best guess β₁=0 but only 51.8% confident
+3,३,-1,1,47.1,1.133,0.704,AMBIGUOUS — best guess β₁=1 but only 47.1% confident
+4,४,1,1,90.5,1.164,0.977,β₁ = 1  (90.5% of images agree)
+5,५,-1,1,68.5,1.368,0.872,AMBIGUOUS — best guess β₁=1 but only 68.5% confident
+6,६,-1,0,69.2,1.463,0.398,AMBIGUOUS — best guess β₁=0 but only 69.2% confident
+7,७,1,1,89.1,1.146,0.944,β₁ = 1  (89.1% of images agree)
+8,८,0,0,96.8,1.577,0.034,β₁ = 0  (96.8% of images agree)
+9,९,1,1,71.2,1.041,1.022,β₁ = 1  (71.2% of images agree)
