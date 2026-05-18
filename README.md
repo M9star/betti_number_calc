@@ -23,3 +23,19 @@
 
 **AMBIGUOUS** — skip in topological loss or treat carefully: digits **0, 2, 3, 5, 6**
 
+## Running More Classes
+
+The analysis script is now class-count agnostic. For the full 46-class Devanagari character dataset, prepare a CSV with:
+
+```csv
+filename,folder,label,character
+Train/character_1_ka/example.png,character_1_ka,0,क
+```
+
+Then run:
+
+```bash
+python3 betti_batch_analysis.py --csv your_46_class_file.csv --out-dir betti_outputs_46
+```
+
+Labels can be `0` through `45`; the script reads the available labels from the CSV and computes topology summaries for each class.
