@@ -1,0 +1,26 @@
+# macOS metadata
+.DS_Store
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local datasets
+DevanagariHandwrittenCharacterDataset/
+Train/
+Test/
+*.zip
+hindi_mnist.csv
+
+# Generated Betti analysis outputs
+betti_outputs*/
+betti_output*/
+image_manifest.csv
+betti_results_*.csv
+betti_distribution.csv
+betti_classifier.csv
+fig*_*.png
+
+# Keep the final 46-class analysis artifacts in git.
+!betti_outputs_46/
+!betti_outputs_46/**

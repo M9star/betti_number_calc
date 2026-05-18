@@ -1,36 +1,22 @@
 """
-Option A — Batch Betti Number Analysis for Devanagari Classes
-==============================================================
-Reads a CSV, loads each image from disk, computes β₀ and β₁ for
-every image, then:
+Batch Betti Number Analysis for Devanagari classes.
 
-  1. Saves per-image results    → betti_results_train.csv / betti_results_test.csv
-  2. Saves distribution table   → betti_distribution.csv
-  3. Saves classifier table     → betti_classifier.csv  (labels for Option B CNN)
-  4. Produces 5 visualisation figures:
-       fig1_b1_distribution.png     — stacked bar chart per class
-       fig2_per_digit_histogram.png — individual histogram per class
-       fig3_confidence_heatmap.png  — heatmap of β₁ confidence
-       fig4_mean_b0_fragmentation.png — fragmentation check (mean β₀)
-       fig5_violin_b1.png           — violin plot of β₁ distribution
+This script estimates β0 and β1 from the dataset itself, because handwritten
+Devanagari topology is often ambiguous after binarization. It accepts either a
+folder dataset with Train/Test class subfolders or a CSV manifest, then writes:
 
-CSV format expected:
-    filename, folder, label, character
-    e.g.  Test/digit_0/103277.png, digit_0, 0, ०
+- per-image Betti results
+- per-class distribution and classifier CSVs
+- five summary figures
 
-Usage
------
-    python betti_batch_analysis.py
-    python betti_batch_analysis.py --csv devanagari_46.csv --out-dir betti_outputs_46
-
-Install
--------
-    pip install numpy pandas scipy matplotlib tqdm pillow seaborn
+Example:
+    python3 betti_batch_analysis.py --dataset-dir DevanagariHandwrittenCharacterDataset --out-dir betti_outputs_46
 """
 
 import argparse
 import math
 import os
+import re
 import sys
 import tempfile
 import warnings
@@ -58,6 +44,56 @@ warnings.filterwarnings("ignore")   # suppress font/tight_layout warnings
 # ── Config ─────────────────────────────────────────────────────────────────────
 IMG_SIZE  = 32
 THRESHOLD = 128
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+
+DHCD_CHARACTER_MAP = {
+    "character_1_ka": "क",
+    "character_2_kha": "ख",
+    "character_3_ga": "ग",
+    "character_4_gha": "घ",
+    "character_5_kna": "ङ",
+    "character_6_cha": "च",
+    "character_7_chha": "छ",
+    "character_8_ja": "ज",
+    "character_9_jha": "झ",
+    "character_10_yna": "ञ",
+    "character_11_taamatar": "ट",
+    "character_12_thaa": "ठ",
+    "character_13_daa": "ड",
+    "character_14_dhaa": "ढ",
+    "character_15_adna": "ण",
+    "character_16_tabala": "त",
+    "character_17_tha": "थ",
+    "character_18_da": "द",
+    "character_19_dha": "ध",
+    "character_20_na": "न",
+    "character_21_pa": "प",
+    "character_22_pha": "फ",
+    "character_23_ba": "ब",
+    "character_24_bha": "भ",
+    "character_25_ma": "म",
+    "character_26_yaw": "य",
+    "character_27_ra": "र",
+    "character_28_la": "ल",
+    "character_29_waw": "व",
+    "character_30_motosaw": "श",
+    "character_31_petchiryakha": "ष",
+    "character_32_patalosaw": "स",
+    "character_33_ha": "ह",
+    "character_34_chhya": "क्ष",
+    "character_35_tra": "त्र",
+    "character_36_gya": "ज्ञ",
+    "digit_0": "०",
+    "digit_1": "१",
+    "digit_2": "२",
+    "digit_3": "३",
+    "digit_4": "४",
+    "digit_5": "५",
+    "digit_6": "६",
+    "digit_7": "७",
+    "digit_8": "८",
+    "digit_9": "९",
+}
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPERS — safe lookup in dist DataFrame (handles missing classes)
@@ -95,6 +131,24 @@ def _class_display(dist: pd.DataFrame, label: int) -> str:
         return f"{label}\n{name}"
     return f"class {label}"
 
+
+def _class_character(class_name: str) -> str:
+    """Return the Devanagari glyph for known DHCD class folders."""
+    return DHCD_CHARACTER_MAP.get(class_name, "")
+
+
+def _class_sort_key(class_name: str):
+    """Natural order for DHCD folders: character_1..36, then digit_0..9."""
+    m = re.match(r"character_(\d+)_", class_name)
+    if m:
+        return (0, int(m.group(1)), class_name)
+
+    m = re.match(r"digit_(\d+)$", class_name)
+    if m:
+        return (1, int(m.group(1)), class_name)
+
+    return (2, class_name)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # BETTI CORE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -123,13 +177,74 @@ def load_image(path: str) -> np.ndarray:
     return np.array(img, dtype=np.uint8)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 1 — PROCESS ALL IMAGES FROM CSV
+# STEP 1 — PROCESS ALL IMAGES FROM CSV OR CLASS FOLDERS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def process_csv(csv_path: str, base_dir: str, split_name: str) -> pd.DataFrame:
     df_csv = pd.read_csv(csv_path)
     print(f"\n  Loaded {split_name} CSV : {len(df_csv):,} rows")
+    return process_manifest(df_csv, base_dir, split_name)
 
+
+def build_manifest_from_folders(dataset_dir: str, base_dir: str) -> pd.DataFrame:
+    """
+    Build a CSV-like manifest from a folder dataset:
+        dataset_dir/Train/<class_name>/*.png
+        dataset_dir/Test/<class_name>/*.png
+    Labels are assigned from class folder names in stable DHCD order.
+    """
+    dataset_dir = os.path.abspath(dataset_dir)
+    split_dirs = []
+    for split_name in ["Train", "Test"]:
+        split_dir = os.path.join(dataset_dir, split_name)
+        if os.path.isdir(split_dir):
+            split_dirs.append((split_name.lower(), split_dir))
+
+    if not split_dirs:
+        split_dirs = [("all", dataset_dir)]
+
+    class_names = set()
+    for _, split_dir in split_dirs:
+        for name in os.listdir(split_dir):
+            p = os.path.join(split_dir, name)
+            if os.path.isdir(p) and not name.startswith("."):
+                class_names.add(name)
+
+    class_names = sorted(class_names, key=_class_sort_key)
+    label_by_class = {name: i for i, name in enumerate(class_names)}
+
+    records = []
+    for split_name, split_dir in split_dirs:
+        for class_name in class_names:
+            class_dir = os.path.join(split_dir, class_name)
+            if not os.path.isdir(class_dir):
+                continue
+
+            for root, _, files in os.walk(class_dir):
+                for fname in sorted(files):
+                    if fname.startswith("."):
+                        continue
+                    ext = os.path.splitext(fname)[1].lower()
+                    if ext not in IMAGE_EXTENSIONS:
+                        continue
+
+                    path = os.path.join(root, fname)
+                    records.append({
+                        "filename": os.path.relpath(path, base_dir).replace("\\", "/"),
+                        "folder": class_name,
+                        "label": label_by_class[class_name],
+                        "character": _class_character(class_name),
+                        "split": split_name,
+                    })
+
+    df = pd.DataFrame(records)
+    print(f"\n  Scanned dataset folder : {dataset_dir}")
+    print(f"  Found classes          : {len(class_names):,}")
+    print(f"  Found images           : {len(df):,}")
+    return df
+
+
+def process_manifest(df_csv: pd.DataFrame, base_dir: str, split_name: str) -> pd.DataFrame:
     records, errors = [], 0
 
     for _, row in tqdm(df_csv.iterrows(), total=len(df_csv),
@@ -154,8 +269,10 @@ def process_csv(csv_path: str, base_dir: str, split_name: str) -> pd.DataFrame:
             label  = int(row["label"])
             class_name = str(row.get("folder", f"class_{label}"))
             character = str(row.get("character", "")).strip()
+            if not character or character.lower() == "nan":
+                character = _class_character(class_name)
             records.append({
-                "split":          split_name,
+                "split":          str(row.get("split", split_name)),
                 "filename":       img_rel,
                 "label":          label,
                 "class_name":     class_name,
@@ -459,10 +576,12 @@ def print_summary(dist: pd.DataFrame, clf: pd.DataFrame):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compute Betti-number summaries for any labeled Devanagari image CSV."
+        description="Compute Betti-number summaries for a Devanagari CSV or class-folder dataset."
     )
-    parser.add_argument("--csv", default="hindi_mnist.csv",
+    parser.add_argument("--csv", default=None,
                         help="CSV with filename, label, and optional folder/character columns.")
+    parser.add_argument("--dataset-dir", default="DevanagariHandwrittenCharacterDataset",
+                        help="Dataset folder with Train/Test class subfolders, used when --csv is omitted.")
     parser.add_argument("--base-dir", default=os.getcwd(),
                         help="Base folder used to resolve image paths from the CSV.")
     parser.add_argument("--out-dir", default="betti_outputs",
@@ -476,34 +595,55 @@ def main():
     out_dir = args.out_dir
     if not os.path.isabs(out_dir):
         out_dir = os.path.join(base_dir, out_dir)
-    csv_path = args.csv
-    if not os.path.isabs(csv_path):
-        csv_path = os.path.join(base_dir, csv_path)
 
     print(f"\n  Using base folder: {base_dir}")
     print(f"  Output folder: {out_dir}")
-    print(f"  CSV: {csv_path}")
     os.makedirs(out_dir, exist_ok=True)
 
-    # ── Process CSVs ───────────────────────────────────────────────────────────
-    dfs = []
+    # ── Build/load image manifest ──────────────────────────────────────────────
+    if args.csv:
+        csv_path = args.csv
+        if not os.path.isabs(csv_path):
+            csv_path = os.path.join(base_dir, csv_path)
+        if not os.path.exists(csv_path):
+            print(f"\n  ✗  CSV not found: {csv_path}")
+            sys.exit(1)
+        print(f"  CSV: {csv_path}")
+        df_split = process_csv(csv_path, base_dir, "all")
+    else:
+        dataset_dir = args.dataset_dir
+        if not os.path.isabs(dataset_dir):
+            dataset_dir = os.path.join(base_dir, dataset_dir)
 
-    if not os.path.exists(csv_path):
-        print(f"\n  ✗  CSV not found: {csv_path}")
-        sys.exit(1)
+        fallback_csv = os.path.join(base_dir, "hindi_mnist.csv")
+        if os.path.isdir(dataset_dir):
+            print(f"  Dataset folder: {dataset_dir}")
+            manifest = build_manifest_from_folders(dataset_dir, base_dir)
+            if manifest.empty:
+                print("\n  ✗  No images found in dataset folder.")
+                sys.exit(1)
+            manifest_path = os.path.join(out_dir, "image_manifest.csv")
+            manifest.to_csv(manifest_path, index=False)
+            print(f"  Saved manifest → {manifest_path}")
+            df_split = process_manifest(manifest, base_dir, "folders")
+        elif os.path.exists(fallback_csv):
+            print(f"  Dataset folder not found; using fallback CSV: {fallback_csv}")
+            df_split = process_csv(fallback_csv, base_dir, "all")
+        else:
+            print(f"\n  ✗  Dataset folder not found: {dataset_dir}")
+            print("     Provide --dataset-dir or --csv.")
+            sys.exit(1)
 
-    df_split = process_csv(csv_path, base_dir, "all")
     out_path = os.path.join(out_dir, "betti_results_all.csv")
     df_split.to_csv(out_path, index=False)
     print(f"\n  Saved results → {out_path}")
-    dfs.append(df_split)
 
-    if not dfs:
+    if df_split.empty:
         print("\n  ✗  No data processed. Check your paths and try again.")
         sys.exit(1)
 
     # ── Combine ────────────────────────────────────────────────────────────────
-    df_all = pd.concat(dfs, ignore_index=True)
+    df_all = df_split
     labels = sorted(df_all["label"].astype(int).unique().tolist())
     print(f"\n  Total images processed : {len(df_all):,}")
     print(f"  Classes processed : {len(labels):,}")
